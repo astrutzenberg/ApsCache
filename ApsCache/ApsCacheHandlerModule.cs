@@ -25,7 +25,7 @@ namespace ApsCache
         public async Task Invoke(HttpContext context)
         {
             // Do something with context near the beginning of request processing.
-            _logger.LogInformation("Entering ApsCacheHandler.Invoke");
+            //_logger.LogInformation("Entering ApsCacheHandler.Invoke");
 
             if (!TerminateRequest()){
                 await _next.Invoke(context);

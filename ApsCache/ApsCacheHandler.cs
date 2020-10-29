@@ -1,9 +1,14 @@
 using AngleSharp;
 using AngleSharp.Dom;
+using ApsCache.ConfigOptions;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Extensions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RestSharp;
+using RestSharp.Extensions;
+using System.IO;
 using System.Threading.Tasks;
 
 namespace ApsCache
@@ -11,41 +16,97 @@ namespace ApsCache
     public class ApsCacheHandler
     {
         private readonly ILogger _logger;
+        private readonly IApsSettings _apsSettings;
 
-        public ApsCacheHandler(ILogger<ApsCacheHandler> logger,RequestDelegate next)
+        public ApsCacheHandler(IOptions<ApsSettings> options,ILogger<ApsCacheHandler> logger,RequestDelegate next)
         {
             this._logger=logger;
-            // This is an HTTP Handler, so no need to store next
+            this._apsSettings = options.Value;
         }
 
         public async Task Invoke(HttpContext context)
         {
-            string response = GenerateResponse(context);
+            IRestResponse upstreamResponse = GenerateResponse(context);
 
-            context.Response.ContentType = GetContentType();
-            await context.Response.WriteAsync(response);
+            Microsoft.AspNetCore.Http.HttpResponse cResponse = context.Response;
+
+            cResponse.ContentType = upstreamResponse.ContentType;
+            cResponse.StatusCode = (int)upstreamResponse.StatusCode;
+            await context.Response.WriteAsync(upstreamResponse.Content);
         }
 
         // ...
 
-        private string GenerateResponse(HttpContext context)
+        private IRestResponse GenerateResponse(HttpContext context)
         {
             HttpRequest request= context.Request;
 
+            _logger.LogInformation("Upstream Request: {0}, Relative Uri: {1} ",request.Method, request.GetEncodedPathAndQuery());
 
-            string ep= "http://dccbrt.com";
+            string ep = _apsSettings.Endpoint;
             IRestClient rc = new RestClient(ep);
-            IRestRequest req = new RestRequest("/");
 
-            IRestResponse resp = rc.Get(req);
+            IRestRequest req = new RestRequest(request.GetEncodedPathAndQuery());
+            if (request.Body != null)
+            {
+                using (StreamReader rdr = new StreamReader(request.Body))
+                {
+                    string body = rdr.ReadToEnd();
+                    if (!string.IsNullOrWhiteSpace(body))
+                    {
+                        _logger.LogInformation("Body: {0}", body);
+                        req.AddParameter("body", body);
+                    }
+                }
+            }
 
+            if(request.Cookies.Count > 0)
+            {
+                foreach(string key in request.Cookies.Keys)
+                {
+                    req.AddCookie(key, request.Cookies[key]);
+                }
+            }
 
+            //inject other headers request headers
+            /*
+            if (request.Headers.Count > 0)
+            {
+                foreach (string key in request.Headers.Keys)
+                {
+                    //req.AddHeader(key, request.Headers[key]);
+                }
+            }
+            */
+
+            IRestResponse resp = null;
+            switch (request.Method.ToLower())
+            {
+                case "get":
+
+                    resp = rc.Get(req);
+                    break;
+                case "post":
+                    resp = rc.Post(req);
+                    break;
+                case "put":
+                    resp = rc.Put(req);
+                    break;
+                case "delete":
+                    resp = rc.Delete(req);
+                    break;
+                case "head":
+                    resp = rc.Head(req);
+                    break;
+            }
+
+            return resp;
+
+            //If we need to inject info into the response content?
+            /*
             var config = Configuration.Default;
             var browsingContext = BrowsingContext.New(config);
 
-            //Create a virtual request to specify the document to load...
-            //TODO: you have got to be kidding me...there HAS to be some sort of way to  
-            //just 'gin up the IDoc object from a static string?
             IDocument doc = browsingContext.OpenAsync(req => req.Content(resp.Content)).Result;
 
             if(doc!=null){
@@ -66,12 +127,9 @@ namespace ApsCache
             }
 
             return  doc.Body.OuterHtml;
+            */
         }
 
-        private string GetContentType()
-        {
-            return "text/html";
-        }
     }
 
     public static class ApsCacheHandlerExtensions
